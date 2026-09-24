@@ -1,0 +1,26 @@
+# Este archivo debe estar en el repositorio en la ruta:  .github/workflows/avisos.yml
+name: Avisos de caducidad
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'   # cada 30 minutos (GitHub puede retrasarlo un poco)
+  workflow_dispatch:          # para lanzarlo a mano desde la pestaña Actions
+
+concurrency:
+  group: avisos
+  cancel-in-progress: false
+
+jobs:
+  avisos:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Enviar avisos pendientes
+        run: node avisos.mjs
+        env:
+          CONEXION: ${{ secrets.CONEXION }}
+          APP_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/
