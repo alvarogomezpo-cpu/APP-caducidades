@@ -365,6 +365,8 @@
 
       <div id="syncOn" hidden>
         <p class="help">Para conectar el otro móvil (y el programador de GitHub) copia este código y pégalo allí. Es privado: quien lo tenga puede ver y cambiar vuestros datos.</p>
+        <label class="lab" for="syncCode">Tu código (comprueba que empieza por «CAD1.»)</label>
+        <code id="syncCode" class="topic" style="user-select:all"></code>
         <div class="row" style="margin-top:0">
           <button id="syncCopy" class="btn" type="button">Copiar código de conexión</button>
           <button id="syncOffBtn" class="btn danger" type="button">Desconectar</button>
@@ -654,6 +656,7 @@
     const on = !!readObj(CKEY);
     $('#syncOff').hidden = on;
     $('#syncOn').hidden = !on;
+    if (on) { try { $('#syncCode').textContent = makeConnCode(readObj(CKEY)); } catch (e) {} }
     $('#buyNote').textContent = on
       ? 'La lista se actualiza sola en los dos móviles.'
       : 'Cada móvil guarda su propia lista. Activa la sincronización en Ajustes o usa «Compartir lista».';
@@ -1594,7 +1597,10 @@
   $('#syncCopy').addEventListener('click', () => {
     const conn = readObj(CKEY);
     if (!conn) return;
-    copyText(makeConnCode(conn)).then(() => toast('Código copiado. Pégalo en Ajustes del otro móvil.'), () => toast('No se pudo copiar.'));
+    copyText(makeConnCode(conn)).then(
+      () => toast('Código copiado. Pégalo en Ajustes del otro móvil.'),
+      () => toast('No se pudo copiar solo. Está escrito justo arriba: mantén el dedo sobre él para seleccionarlo y copiarlo a mano.')
+    );
   });
   $('#syncOffBtn').addEventListener('click', () => {
     if (!confirm('¿Desconectar? Este móvil se quedará con una copia y dejará de sincronizar.')) return;
