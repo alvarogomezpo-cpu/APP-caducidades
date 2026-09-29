@@ -186,12 +186,6 @@
   .card h2 { margin: 0 0 4px; }
   .help { font-size: .9rem; color: var(--muted); margin: 0 0 12px; }
   .help ol { margin: 6px 0 0; padding-left: 20px; }
-  .rem-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
-  .rem-row input { padding: 9px 8px; background: var(--bg); font-size: .95rem; }
-  .rem-row input[type=number] { width: 58px; text-align: center; }
-  .rem-row input[type=time] { width: 126px; }
-  .rem-row .txt { color: var(--muted); font-size: .9rem; flex: 1; min-width: 0; }
-  .rem-row .btn { padding: 8px 10px; }
   a { color: var(--brand); }
   code.topic {
     display: block; padding: 10px 12px; margin-bottom: 10px;
@@ -201,6 +195,12 @@
   textarea { width: 100%; min-height: 104px; background: var(--bg); font-size: .85rem; resize: vertical; }
   .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 10px; }
   .row label { font-size: .92rem; display: flex; gap: 8px; align-items: center; }
+  .daychips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+  .daychip {
+    font: inherit; font-size: .85rem; background: var(--surface); color: var(--ink);
+    border: 1px solid var(--line); border-radius: 999px; padding: 7px 14px; cursor: pointer;
+  }
+  .daychip.on { background: var(--sticker); color: var(--sticker-ink); border-color: var(--sticker); font-weight: 700; }
   .status { display: flex; align-items: center; gap: 8px; font-weight: 600; margin-bottom: 8px; }
   .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); flex: none; }
   .dot.ok { background: var(--ok); }
@@ -316,9 +316,8 @@
 
     <section class="card">
       <h2>Preavisos</h2>
-      <p class="help">Cuándo quieres que te avisen antes de que caduque algo. Pon 0 días para el mismo día. La hora es la del aviso. Vale para todas las caducidades.</p>
-      <div id="remRows"></div>
-      <div class="row"><button id="remAdd" class="btn" type="button">Añadir preaviso</button></div>
+      <p class="help">Cuántos días antes quieres que te avisen de que algo caduca. Puedes elegir varios. Los avisos saltan siempre a las 11:00 de la mañana de ese día. En cuanto un producto caduca de verdad, se quita solo de la lista y de Google Calendar.</p>
+      <div id="remDays" class="daychips"></div>
       <p id="tzInfo" class="small" style="margin-top:10px"></p>
     </section>
 
@@ -490,17 +489,20 @@
   function tzNow() {
     try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'Europe/Madrid'; } catch (e) { return 'Europe/Madrid'; }
   }
+  // Hora fija para todos los avisos (Google Calendar, .ics y ntfy). Así el aviso cae siempre en el minuto exacto,
+  // sin depender de que varios preavisos con horas distintas descuadren el cálculo.
+  const REMINDER_TIME = '11:00';
   function normSettings(s) {
     s = s && typeof s === 'object' ? s : {};
-    let rem = Array.isArray(s.reminders) ? s.reminders : [{ days: 1, time: '09:00' }, { days: 0, time: '09:00' }];
-    rem = rem.slice(0, 6).map(r => ({
-      days: Math.min(90, Math.max(0, parseInt(r && r.days, 10) || 0)),
-      time: /^\d{2}:\d{2}$/.test(r && r.time) ? r.time : '09:00'
-    }));
-    rem.sort((a, b) => b.days - a.days || a.time.localeCompare(b.time));
-    rem = rem.filter((r, i) => i === 0 || r.days !== rem[i - 1].days || r.time !== rem[i - 1].time);
+    let raw;
+    if (Array.isArray(s.days)) raw = s.days;
+    else if (Array.isArray(s.reminders)) raw = s.reminders.map(r => r && r.days);   // formato antiguo, con hora por preaviso
+    else raw = null;
+    const days = raw === null
+      ? [1, 0]
+      : Array.from(new Set(raw.map(d => Math.min(15, Math.max(0, parseInt(d, 10) || 0))))).sort((a, b) => b - a);
     return {
-      reminders: rem,
+      days: days,
       tz: typeof s.tz === 'string' && s.tz ? s.tz : tzNow(),
       topic: /^[a-z0-9-]{8,64}$/.test(s.topic || '') ? s.topic : 'caduca-' + randomStr(16),
       gclient: typeof s.gclient === 'string' ? s.gclient.trim().slice(0, 200) : ''
@@ -625,13 +627,15 @@
     F.onSnapshot(ref('config', 'settings'), snap => {
       if (!snap.exists()) { pushSettings(); return; }
       try {
-        const s = normSettings(JSON.parse(snap.data().json));
+        const raw = JSON.parse(snap.data().json);
+        const s = normSettings(raw);
         if (JSON.stringify(s) !== JSON.stringify(settings)) {
           settings = s;
           write(SKEY, settings);
           renderSettings();
           render();
         }
+        if (!Array.isArray(raw.days)) pushSettings();   // formato antiguo (por preaviso): lo dejamos migrado en la nube
       } catch (e) { /* ajustes ilegibles: se ignoran */ }
     }, cloudErr);
   }
@@ -982,12 +986,12 @@
 
   function alarmLines(name) {
     const out = [];
-    settings.reminders.forEach(r => {
-      const p = r.time.split(':').map(Number);
-      const before = r.days * 1440 - (p[0] * 60 + p[1]);   // minutos antes de las 00:00 del día de caducidad
+    const p = REMINDER_TIME.split(':').map(Number);
+    settings.days.forEach(d => {
+      const before = d * 1440 - (p[0] * 60 + p[1]);   // minutos antes de las 00:00 del día de caducidad
       const abs = Math.abs(before);
       const trig = (before > 0 ? '-' : '') + 'PT' + Math.floor(abs / 60) + 'H' + (abs % 60) + 'M';
-      out.push('BEGIN:VALARM', 'ACTION:DISPLAY', 'DESCRIPTION:' + esc(reminderText(r.days, name)), 'TRIGGER:' + trig, 'END:VALARM');
+      out.push('BEGIN:VALARM', 'ACTION:DISPLAY', 'DESCRIPTION:' + esc(reminderText(d, name)), 'TRIGGER:' + trig, 'END:VALARM');
     });
     return out;
   }
@@ -1122,7 +1126,7 @@
     });
 
     // Franja amarilla: lo que entra dentro del preaviso más largo (mínimo, mañana)
-    const horizon = Math.max.apply(null, [1].concat(settings.reminders.map(r => r.days)));
+    const horizon = Math.max.apply(null, [1].concat(settings.days));
     const soon = asc.filter(it => diffDays(it.date) <= horizon);
     const box = $('#alert');
     if (soon.length) {
@@ -1135,48 +1139,46 @@
       box.hidden = true;
     }
     scheduleGcal();
+    cleanupExpired();
+  }
+
+  // En cuanto un producto ha caducado de verdad (ya pasó su fecha), se quita solo.
+  // Al desaparecer de la lista compartida, gReconcile() borra también su evento de Google Calendar
+  // en cualquier móvil conectado (el suyo y el de tu mujer).
+  let cleaning = false;
+  function cleanupExpired() {
+    if (!syncReady || cleaning) return;
+    const gone = items.filter(it => diffDays(it.date) < 0);
+    if (!gone.length) return;
+    cleaning = true;
+    gone.forEach(it => delItem(it.id));
+    toast(gone.length === 1 ? 'Se ha quitado 1 producto caducado.' : 'Se han quitado ' + gone.length + ' productos caducados.', null, true);
+    setTimeout(() => { cleaning = false; }, 0);
   }
 
   /* ---------- pintar ajustes ---------- */
-  function readRows() {
-    const rows = Array.from(document.querySelectorAll('#remRows .rem-row'));
-    if (!rows.length) return;
-    settings.reminders = rows.map(r => ({
-      days: r.querySelector('input[type=number]').value,
-      time: r.querySelector('input[type=time]').value
-    }));
+  function toggleDay(d) {
+    const i = settings.days.indexOf(d);
+    if (i > -1) settings.days.splice(i, 1); else settings.days.push(d);
     settings.tz = tzNow();
     saveSettings();
-    const now = settings.reminders;
-    const same = now.length === rows.length && now.every((r, i) =>
-      r.days === Number(rows[i].days) && r.time === rows[i].time);
-    if (!same) setTimeout(renderSettings, 0);   // fuera del evento, para no chocar con el blur
+    renderSettings();
   }
 
   function renderSettings() {
-    const box = $('#remRows');
+    const box = $('#remDays');
     box.replaceChildren();
-    if (!settings.reminders.length) {
-      box.append(h('p', { class: 'help' }, 'Sin preavisos: no recibirás ningún aviso automático.'));
+    for (let d = 0; d <= 15; d++) {
+      const label = d === 0 ? 'Mismo día' : d === 1 ? '1 día antes' : d + ' días antes';
+      box.append(h('button', {
+        type: 'button', class: 'daychip' + (settings.days.indexOf(d) > -1 ? ' on' : ''),
+        'aria-pressed': String(settings.days.indexOf(d) > -1), onclick: () => toggleDay(d)
+      }, label));
     }
-    settings.reminders.forEach((r, i) => {
-      const days = h('input', { type: 'number', min: '0', max: '90', inputmode: 'numeric', 'aria-label': 'Días antes de caducar' });
-      days.value = r.days;
-      const time = h('input', { type: 'time', 'aria-label': 'Hora del aviso' });
-      time.value = r.time;
-      days.addEventListener('change', readRows);
-      time.addEventListener('change', readRows);
-      box.append(h('div', { class: 'rem-row' },
-        days, h('span', { class: 'txt' }, r.days === 1 ? 'día antes' : 'días antes'), time,
-        h('button', { type: 'button', class: 'btn danger', 'aria-label': 'Quitar preaviso', onclick: () => {
-          settings.reminders.splice(i, 1);
-          saveSettings();
-          renderSettings();
-        } }, 'Quitar')
-      ));
-    });
-    $('#remAdd').disabled = settings.reminders.length >= 6;
-    $('#tzInfo').textContent = 'Zona horaria: ' + settings.tz + '.';
+    if (!settings.days.length) {
+      box.append(h('p', { class: 'help', style: 'width:100%;margin:4px 0 0' }, 'Sin preavisos: no recibirás ningún aviso automático.'));
+    }
+    $('#tzInfo').textContent = 'Los avisos saltan a las ' + REMINDER_TIME + ' (zona horaria: ' + settings.tz + ').';
 
     $('#topicText').textContent = settings.topic;
     if (document.activeElement !== $('#gClient')) $('#gClient').value = settings.gclient || '';
@@ -1269,21 +1271,13 @@
     return g.calId;
   }
 
-  const toMin = t => { const p = t.split(':').map(Number); return p[0] * 60 + p[1]; };
-
-  // Evento con hora: empieza a la hora del último aviso "del mismo día" (o a las 9:00), así todos los avisos caen antes del inicio.
+  // El evento empieza a las 11:00 del día de caducidad. Como todos los preavisos comparten esa misma hora,
+  // "3 días antes" son siempre exactamente 3*1440 minutos antes del inicio: cae siempre a las 11:00 en punto.
   function gEventBody(it) {
-    const rem = settings.reminders;
-    const dayOf = rem.filter(r => r.days === 0).map(r => toMin(r.time));
-    const startMin = dayOf.length ? Math.max.apply(null, dayOf) : 9 * 60;
-    const mins = [];
-    rem.forEach(r => {
-      const m = r.days * 1440 + (startMin - toMin(r.time));
-      if (m >= 0 && m <= 40320 && mins.indexOf(m) < 0) mins.push(m);
-    });
-    mins.sort((a, b) => a - b);
+    const [hh, mm] = REMINDER_TIME.split(':').map(Number);
+    const mins = settings.days.map(d => d * 1440).filter(m => m <= 40320).sort((a, b) => a - b);
     const d = fromISO(it.date);
-    const start = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, startMin);
+    const start = new Date(d.getFullYear(), d.getMonth(), d.getDate(), hh, mm);
     const end = new Date(start.getTime() + 30 * 60000);
     const fmt = x => toISO(x) + 'T' + pad(x.getHours()) + ':' + pad(x.getMinutes()) + ':00';
     return {
@@ -1314,7 +1308,7 @@
   // Solo toca eventos creados por esta app (los que llevan cadId).
   async function gReconcile(force) {
     if (!g.connected || !settings.gclient || !syncReady) return;
-    const sig = JSON.stringify([items.map(i => [i.id, i.name, i.date]), settings.reminders, settings.tz]);
+    const sig = JSON.stringify([items.map(i => [i.id, i.name, i.date]), settings.days, settings.tz]);
     if (!force && sig === gLastSig) return;
     if (gBusy) { gAgain = true; return; }
     gBusy = true;
@@ -1527,18 +1521,6 @@
     if (!done.length) { toast('No hay nada marcado como comprado.'); return; }
     if (cloud) cloudBatch('buy', done, 'delete');
     else { buy = buy.filter(b => !b.done); write(BKEY, buy); renderBuy(); }
-  });
-
-  // Ajustes: preavisos
-  $('#remAdd').addEventListener('click', () => {
-    if (settings.reminders.length >= 6) return;
-    const has = d => settings.reminders.some(r => r.days === d && r.time === '09:00');
-    const days = [3, 2, 7, 1, 0, 5, 4].find(d => !has(d));
-    if (days === undefined) return;
-    settings.reminders.push({ days: days, time: '09:00' });
-    settings.tz = tzNow();
-    saveSettings();
-    renderSettings();
   });
 
   // Ajustes: Google Calendar
