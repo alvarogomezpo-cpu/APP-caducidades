@@ -1142,13 +1142,15 @@
     cleanupExpired();
   }
 
-  // En cuanto un producto ha caducado de verdad (ya pasó su fecha), se quita solo.
-  // Al desaparecer de la lista compartida, gReconcile() borra también su evento de Google Calendar
-  // en cualquier móvil conectado (el suyo y el de tu mujer).
+  // Un producto caducado se queda visible este número de días antes de borrarse solo.
+  const EXPIRY_GRACE_DAYS = 2;
+
+  // Pasado ese margen, se quita solo. Al desaparecer de la lista compartida, gReconcile() borra
+  // también su evento de Google Calendar en cualquier móvil conectado (el suyo y el de tu mujer).
   let cleaning = false;
   function cleanupExpired() {
     if (!syncReady || cleaning) return;
-    const gone = items.filter(it => diffDays(it.date) < 0);
+    const gone = items.filter(it => diffDays(it.date) < -EXPIRY_GRACE_DAYS);
     if (!gone.length) return;
     cleaning = true;
     gone.forEach(it => delItem(it.id));
